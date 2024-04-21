@@ -30,6 +30,9 @@ To run the script you need to:
 
 You should see the following output:  
 ![output](readme/output.png)
+![output](readme/hme.png)
+![output](readme/prc.png)
+
 
 ## Snipe list
 By default, script buys each token which has a new liquidity pool created and open for trading. 
