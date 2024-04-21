@@ -30,7 +30,9 @@ To run the script you need to:
 
 You should see the following output:  
 ![output](readme/output.png)
+
 ![output](readme/hme.png)
+
 ![output](readme/prc.png)
 
 
