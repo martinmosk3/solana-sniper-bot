@@ -933,9 +933,9 @@ const runListener = async () => {
   logger.info(`Listening for raydium changes: ${raydiumSubscriptionId}`);
   logger.info(`Listening for open book changes: ${openBookSubscriptionId}`);
 
-  logger.info('------------------- 🚀 ---------------------');
+  logger.info('-------------------  ---------------------');
   logger.info('Bot is running! Press CTRL + C to stop it.');
-  logger.info('------------------- 🚀 ---------------------');
+  logger.info('-------------------  ---------------------');
 
   if (USE_SNIPE_LIST) {
     setInterval(loadSnipeList, SNIPE_LIST_REFRESH_INTERVAL);
