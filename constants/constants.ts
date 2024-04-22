@@ -32,7 +32,7 @@ export const SOL = 'So11111111111111111111111111111111111111112';
 export const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const DELAY_RETRY_GET_LIQUIDITY_INFO = Number(retrieveEnvVariable('DELAY_RETRY_GET_LIQUIDITY_INFO', logger));
 export const MIN_LIQUIDITY_USD = Number(retrieveEnvVariable('MIN_LIQUIDITY_USD', logger));
-export const MAX_LIQUIDITY_USD = Number(retrieveEnvVariable('MIN_LIQUIDITY_USD', logger));
+export const MAX_LIQUIDITY_USD = Number(retrieveEnvVariable('MAX_LIQUIDITY_USD', logger));
 export const CHECK_LIQUIDITY_AMOUNT = retrieveEnvVariable('CHECK_LIQUIDITY_AMOUNT', logger) === 'true';
 export const RETRY_GET_LIQUIDITY_INFO = Number(retrieveEnvVariable('RETRY_GET_LIQUIDITY_INFO', logger));
 export const CHECK_IF_IS_LOCKED = retrieveEnvVariable('CHECK_IF_IS_LOCKED', logger) === 'true';
