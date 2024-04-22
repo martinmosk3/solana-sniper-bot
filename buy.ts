@@ -24,6 +24,7 @@ import {
   KeyedAccountInfo,
   TransactionMessage,
   VersionedTransaction,
+  LAMPORTS_PER_SOL
 } from '@solana/web3.js';
 import { getTokenAccounts, RAYDIUM_LIQUIDITY_PROGRAM_ID_V4, OPENBOOK_PROGRAM_ID, createPoolKeys } from './liquidity';
 import { checkTokenDetails, logger } from './utils';
@@ -66,6 +67,7 @@ import {
   MAX_BUY,
   DELAY_RETRY_GET_LIQUIDITY_INFO,
   MIN_LIQUIDITY_USD,
+  MAX_LIQUIDITY_USD,
   CHECK_LIQUIDITY_AMOUNT,
   RETRY_GET_LIQUIDITY_INFO,
   CHECK_IF_IS_LOCKED,
@@ -339,13 +341,16 @@ export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStat
 
 
  if (CHECK_LIQUIDITY_AMOUNT) {
-    let poolInfo = await getMinimalPoolInfo(poolState, RETRY_GET_LIQUIDITY_INFO);
-    poolTableInfo.Liquidity = '$' + Math.round(poolInfo.liquidityUSDC).toFixed(2) + ' USD'; 
+  let poolInfo = await getMinimalPoolInfo(poolState, RETRY_GET_LIQUIDITY_INFO);
+  poolTableInfo.Liquidity = '$' + Math.round(poolInfo.liquidityUSDC).toFixed(2) + ' USD'; 
 
-    if (poolInfo.liquidityUSDC < MIN_LIQUIDITY_USD) {
-
+  if (poolInfo.liquidityUSDC < MIN_LIQUIDITY_USD) {
       shouldSkip = true;
-    }
+  }
+
+  if (poolInfo.liquidityUSDC > MAX_LIQUIDITY_USD) {
+      shouldSkip = true;
+  }
 }
 
 
@@ -570,7 +575,7 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
       } else {
         logger.warn('Unable to determine token price in USD');
       }
-      const buyValueString = typeof tokenAccount.buyValue !== 'undefined' ? tokenAccount.buyValue.toFixed(11) : '';
+      const buyValueString = typeof tokenAccount.cambioUsd !== 'undefined' ? tokenAccount.cambioUsd.toFixed(11) : '';
       const quoteAmountString = typeof quoteAmount !== 'undefined' ? quoteAmount.toFixed() : '';
       sendDiscordNotification(
         DISCORD_WEBHOOK_URL,
@@ -593,7 +598,7 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
           url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
           dex: `https://dexscreener.com/solana/${accountData.baseMint}?maker=${wallet.publicKey}`,
         },
-        `Confirmed buy tx... Purchase price: ${tokenAccount.buyValue?.toFixed(11) ?? "undefined"} SOL`,
+        `Confirmed buy tx... Purchase price: ${tokenAccount.cambioUsd?.toFixed(11) ?? "undefined"} USD`,
       );
     } else {
       logger.debug(confirmation.value.err);
@@ -638,7 +643,7 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
       }
 
       
-      const purchasePrice = tokenAccount.buyValue;
+      const purchasePrice = tokenAccount.cambioUsd;
       
       
 
@@ -742,7 +747,7 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
       
         continue;
       }
-      const buyValueString = typeof tokenAccount.buyValue !== 'undefined' ? tokenAccount.buyValue.toFixed(11) : '';
+      const buyValueString = typeof tokenAccount.cambioUsd !== 'undefined' ? tokenAccount.cambioUsd.toFixed(11) : '';
       const quoteAmountString = typeof quoteAmount !== 'undefined' ? quoteAmount.toFixed() : '';
       sendDiscordNotification(
         DISCORD_WEBHOOK_URL, 
@@ -763,7 +768,7 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
           url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
           dex: `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`,
         },
-        `Confirmed sell tx... Sold at: ${value.toFixed(11)} SOL`,
+        `Confirmed sell tx... Sold at: ${value.toFixed(11)} USD`,
       );
       return true;
       
@@ -802,6 +807,29 @@ function shouldBuy(key: string): boolean {
 }
 
 
+async function getVaultBalance(vaultPublicKey: PublicKey): Promise<number> {
+  try {
+    const accountInfo = await solanaConnection.getAccountInfo(vaultPublicKey);
+    if (accountInfo === null) {
+    //  console.log(`Vault account not found: ${vaultPublicKey.toBase58()}.`);
+      return 0;
+    }
+    const balance = accountInfo.lamports; // Lamports son la unidad más pequeña de SOL
+   // console.log(`Vault account balance (${vaultPublicKey.toBase58()}): ${balance} lamports, equivalent to ${balance / LAMPORTS_PER_SOL} SOL.`);
+    return balance / LAMPORTS_PER_SOL; // Convertir lamports a SOL
+  } catch (error) {
+ //   console.error(`Error getting vault account balance (${vaultPublicKey.toBase58()}):`, error);
+    return 0;
+  }
+}
+
+
+interface VaultAddresses {
+  [key: string]: string;
+}
+const vaultAddresses: VaultAddresses = {};
+const knownPools = new Set()
+
 const runListener = async () => {
   await init();
   const runTimestamp = Math.floor(new Date().getTime() / 1000);
@@ -813,9 +841,15 @@ const runListener = async () => {
       const poolOpenTime = parseInt(poolState.poolOpenTime.toString());
       const existing = existingLiquidityPools.has(key);
 
-      if (poolOpenTime > runTimestamp && !existing) {
-        existingLiquidityPools.add(key);
-        const _ = processRaydiumPool(updatedAccountInfo.accountId, poolState);
+      if (poolOpenTime > runTimestamp && !knownPools.has(key)) {
+        knownPools.add(key);
+        processRaydiumPool(updatedAccountInfo.accountId, poolState);
+
+        vaultAddresses[poolState.baseMint.toString()] = poolState.quoteVault.toBase58();
+
+  const quoteVaultAddress = new PublicKey(vaultAddresses[poolState.baseMint.toString()]);
+
+  
         
       }
     },
@@ -873,45 +907,42 @@ const runListener = async () => {
         if (updatedAccountInfo.accountId.equals(quoteTokenAssociatedAddress)) {
           return;
         }
-        let absoluteMaxReachedValue = -Infinity; 
-        let priceInSol;
+
+        let absoluteMaxReachedValue = -Infinity;
         let completed = false;
-      
+        const MIN_VAULT_BALANCE_TO_ACT = 1;  
+
         while (!completed) {
-          await new Promise(resolve => setTimeout(resolve, 1000)); 
-          let poolId = null;
-          let attempts = 0;
-          const maxAttempts = 20; 
+          await new Promise(resolve => setTimeout(resolve, 3000));  
 
-          while (attempts < maxAttempts && poolId === null) {
-            poolId = await getPoolID(accountData.mint.toBase58());
-            if (poolId === null) {
-              console.log("No Pool ID Found, retrying...");
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              attempts++;
-            }
+          const mintKey = accountData.mint.toBase58();
+          const vaultAddressKey = vaultAddresses[mintKey];
+          if (!vaultAddressKey) {
+            logger.error(`No vault address found for mint: ${mintKey}`);
+            continue;
           }
 
-          if (poolId === null) {
-            console.error("Failed to find Pool ID after several attempts.");
-            continue; 
+          const vaultAddress = new PublicKey(vaultAddressKey);
+          const vaultBalance = await getVaultBalance(vaultAddress);
+          logger.info(`Balance in vault for mint ${mintKey}: ${vaultBalance} SOL`);
+
+          if (vaultBalance < MIN_VAULT_BALANCE_TO_ACT) {
+            logger.error(`ALERT: Pool liquidity for mint ${mintKey} has fallen below critical level of ${MIN_VAULT_BALANCE_TO_ACT} SOL. Starting immediate sale.`);
+            const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, 0, -Infinity);
+            completed = saleResult;
+            continue;
           }
-          //birdeye
-         // const currValue = await retrieveTokenValue(accountData.mint.toBase58());
-          priceInSol = await getTokenPrice(poolId);
-          logger.warn(`Max Price: ${absoluteMaxReachedValue.toFixed(11)} Current Value: ${priceInSol.toFixed(11)}`);
-          
-          if (priceInSol) {
-            absoluteMaxReachedValue = Math.max(absoluteMaxReachedValue, priceInSol);
-            completed = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, priceInSol, absoluteMaxReachedValue);
-            
-            if (completed) {
-              absoluteMaxReachedValue = -Infinity; 
-            }
-          } 
+
+          const currValue = await retrieveTokenValue(mintKey);
+          logger.info(`Max Price: ${absoluteMaxReachedValue} Current value: ${currValue}`);
+
+          if (currValue && vaultBalance > 0) {
+            absoluteMaxReachedValue = Math.max(absoluteMaxReachedValue, currValue);
+            const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, currValue, absoluteMaxReachedValue);
+            completed = saleResult; 
+          }
         }
       },
-      
       COMMITMENT_LEVEL,
       [
         {
@@ -933,9 +964,9 @@ const runListener = async () => {
   logger.info(`Listening for raydium changes: ${raydiumSubscriptionId}`);
   logger.info(`Listening for open book changes: ${openBookSubscriptionId}`);
 
-  logger.info('-------------------  ---------------------');
+  logger.info('------------------- 🚀 ---------------------');
   logger.info('Bot is running! Press CTRL + C to stop it.');
-  logger.info('-------------------  ---------------------');
+  logger.info('------------------- 🚀 ---------------------');
 
   if (USE_SNIPE_LIST) {
     setInterval(loadSnipeList, SNIPE_LIST_REFRESH_INTERVAL);
