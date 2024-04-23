@@ -43,6 +43,11 @@ export const TARGET_GAIN_PERCENTAGE = Number(retrieveEnvVariable('TARGET_GAIN_PE
 export const RETRY_GET_ACCOUNT_INFO = Number(retrieveEnvVariable('RETRY_GET_ACCOUNT_INFO', logger));
 export const LIQUIDITY_SUPPLY_PERCENTAGE = Number(retrieveEnvVariable('LIQUIDITY_SUPPLY_PERCENTAGE', logger));
 export const DISCORD_WEBHOOK_URL = (retrieveEnvVariable('DISCORD_WEBHOOK_URL', logger));
+export const JITO_BLOCK_ENGINE_URL = retrieveEnvVariable('JITO_BLOCK_ENGINE_URL', logger);
+export const JITO_API_PRIVATE_KEY = retrieveEnvVariable('JITO_API_PRIVATE_KEY', logger);
+export const JITO_BUNDLE_TRANSACTION_LIMIT = Number(retrieveEnvVariable('JITO_BUNDLE_TRANSACTION_LIMIT', logger));
+export const JITO_FEE_LAMPORTS = Number(retrieveEnvVariable('JITO_FEE_LAMPORTS', logger));
+export const USE_JITO = retrieveEnvVariable('USE_JITO', logger) === 'true';
 
 
 
