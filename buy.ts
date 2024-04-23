@@ -104,9 +104,7 @@ import {
 const solanaConnection = new Connection(RPC_ENDPOINT, {
   wsEndpoint: RPC_WEBSOCKET_ENDPOINT,
 });
-let altConn = new Connection(RPC_ENDPOINT_ALT, {
-  wsEndpoint: RPC_WEBSOCKET_ENDPOINT_ALT,
-});
+
 
 
 export interface MinimalTokenAccountData {
@@ -200,7 +198,7 @@ if (typeof fetchedSolPrice === 'number' && fetchedSolPrice > 0) {
 
 
   // check existing wallet for associated token account of quote mint
-  const tokenAccounts = await getTokenAccounts(altConn, wallet.publicKey, COMMITMENT_LEVEL);
+  const tokenAccounts = await getTokenAccounts(solanaConnection, wallet.publicKey, COMMITMENT_LEVEL);
 
   for (const ta of tokenAccounts) {
     existingTokenAccounts.set(ta.accountInfo.mint.toString(), <MinimalTokenAccountData>{
