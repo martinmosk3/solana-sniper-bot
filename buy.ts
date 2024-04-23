@@ -1034,7 +1034,7 @@ const runListener = async () => {
     ],
   );
 
-  if (AUTO_SELL) {
+ if (AUTO_SELL) {
     const walletSubscriptionId = solanaConnection.onProgramAccountChange(
       TOKEN_PROGRAM_ID,
       async (updatedAccountInfo) => {
@@ -1046,7 +1046,7 @@ const runListener = async () => {
         let completed = false;
         const MIN_VAULT_BALANCE_TO_ACT = 1;
         let initialChecksDone = false;  
-        let initialChecksPassed = 0;   
+        let initialChecksPassed = 0;
 
         while (!completed) {
           await new Promise(resolve => setTimeout(resolve, 3000));
@@ -1072,12 +1072,11 @@ const runListener = async () => {
                 continue;
               }
             } else {
-              initialChecksDone = true; 
+              initialChecksDone = true;  
             }
           } else {
-
-            if (vaultBalance === 0) {
-              logger.error(`ALERT: Vault balance has dropped to zero. Starting immediate sale.`);
+            if (vaultBalance < MIN_VAULT_BALANCE_TO_ACT) {
+              logger.error(`ALERT: Vault balance for mint ${mintKey} is critically low at ${vaultBalance} SOL. Starting immediate sale.`);
               const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, 0, -Infinity);
               completed = saleResult;
               continue;
