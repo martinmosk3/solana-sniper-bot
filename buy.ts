@@ -814,7 +814,7 @@ async function getVaultBalance(vaultPublicKey: PublicKey): Promise<number> {
     //  console.log(`Vault account not found: ${vaultPublicKey.toBase58()}.`);
       return 0;
     }
-    const balance = accountInfo.lamports; // Lamports son la unidad más pequeña de SOL
+    const balance = accountInfo.lamports; 
    // console.log(`Vault account balance (${vaultPublicKey.toBase58()}): ${balance} lamports, equivalent to ${balance / LAMPORTS_PER_SOL} SOL.`);
     return balance / LAMPORTS_PER_SOL; // Convertir lamports a SOL
   } catch (error) {
@@ -839,7 +839,6 @@ const runListener = async () => {
       const key = updatedAccountInfo.accountId.toString();
       const poolState = LIQUIDITY_STATE_LAYOUT_V4.decode(updatedAccountInfo.accountInfo.data);
       const poolOpenTime = parseInt(poolState.poolOpenTime.toString());
-      const existing = existingLiquidityPools.has(key);
 
       if (poolOpenTime > runTimestamp && !knownPools.has(key)) {
         knownPools.add(key);
@@ -847,7 +846,7 @@ const runListener = async () => {
 
         vaultAddresses[poolState.baseMint.toString()] = poolState.quoteVault.toBase58();
 
-  const quoteVaultAddress = new PublicKey(vaultAddresses[poolState.baseMint.toString()]);
+       const quoteVaultAddress = new PublicKey(vaultAddresses[poolState.baseMint.toString()]);
 
   
         
