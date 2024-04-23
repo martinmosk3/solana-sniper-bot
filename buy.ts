@@ -1042,13 +1042,14 @@ const runListener = async () => {
         if (updatedAccountInfo.accountId.equals(quoteTokenAssociatedAddress)) {
           return;
         }
-
         let absoluteMaxReachedValue = -Infinity;
         let completed = false;
-        const MIN_VAULT_BALANCE_TO_ACT = 1;  
+        const MIN_VAULT_BALANCE_TO_ACT = 1;
+        let initialChecksDone = false;  
+        let initialChecksPassed = 0;   
 
         while (!completed) {
-          await new Promise(resolve => setTimeout(resolve, 3000));  
+          await new Promise(resolve => setTimeout(resolve, 3000));
 
           const mintKey = accountData.mint.toBase58();
           const vaultAddressKey = vaultAddresses[mintKey];
@@ -1061,11 +1062,26 @@ const runListener = async () => {
           const vaultBalance = await getVaultBalance(vaultAddress);
           logger.info(`Balance in vault for mint ${mintKey}: ${vaultBalance} SOL`);
 
-          if (vaultBalance < MIN_VAULT_BALANCE_TO_ACT) {
-            logger.error(`ALERT: Pool liquidity for mint ${mintKey} has fallen below critical level of ${MIN_VAULT_BALANCE_TO_ACT} SOL. Starting immediate sale.`);
-            const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, 0, -Infinity);
-            completed = saleResult;
-            continue;
+          if (!initialChecksDone) {
+            if (vaultBalance < MIN_VAULT_BALANCE_TO_ACT) {
+              initialChecksPassed++;
+              if (initialChecksPassed >= 10) {
+                logger.error(`ALERT: Pool liquidity for mint ${mintKey} has fallen below critical level of ${MIN_VAULT_BALANCE_TO_ACT} SOL after 10 initial checks. Starting immediate sale.`);
+                const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, 0, -Infinity);
+                completed = saleResult;
+                continue;
+              }
+            } else {
+              initialChecksDone = true; 
+            }
+          } else {
+
+            if (vaultBalance === 0) {
+              logger.error(`ALERT: Vault balance has dropped to zero. Starting immediate sale.`);
+              const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, 0, -Infinity);
+              completed = saleResult;
+              continue;
+            }
           }
 
           const currValue = await retrieveTokenValue(mintKey);
@@ -1074,7 +1090,7 @@ const runListener = async () => {
           if (currValue && vaultBalance > 0) {
             absoluteMaxReachedValue = Math.max(absoluteMaxReachedValue, currValue);
             const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, currValue, absoluteMaxReachedValue);
-            completed = saleResult; 
+            completed = saleResult;
           }
         }
       },
