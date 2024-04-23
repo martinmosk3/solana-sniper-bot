@@ -39,7 +39,7 @@ import {
   sendDiscordNotification,
   checkTokenLinks,
   getParsedAccountInfo,
-  calculateLPBurned
+  calculateLPBurned,
    } from './utils';
    import { getPoolID, getTokenPrice } from './utils/price';
  
@@ -89,8 +89,17 @@ import {
   TARGET_GAIN,
   TARGET_GAIN_PERCENTAGE,
   RETRY_GET_ACCOUNT_INFO,
-  LIQUIDITY_SUPPLY_PERCENTAGE
+  LIQUIDITY_SUPPLY_PERCENTAGE,
+  JITO_API_PRIVATE_KEY,
+  JITO_BLOCK_ENGINE_URL,
+  USE_JITO
   } from './constants';
+  import { Bundle } from 'jito-ts/dist/sdk/block-engine/types';
+  import { searcherClient } from 'jito-ts/dist/sdk/block-engine/searcher';
+
+  
+
+
 
 const solanaConnection = new Connection(RPC_ENDPOINT, {
   wsEndpoint: RPC_WEBSOCKET_ENDPOINT,
@@ -121,11 +130,17 @@ let currentOrders = 0;
 let solPrice: number = 0;
 
 
+const jitoApiKeyPriv = Keypair.fromSecretKey(bs58.decode(JITO_API_PRIVATE_KEY))
+const jitoClient = searcherClient(JITO_BLOCK_ENGINE_URL, jitoApiKeyPriv);
+
 
 let snipeList: string[] = [];
 
 async function init(): Promise<void> {
   logger.level = LOG_LEVEL;
+
+
+  
 
   // get wallet
   wallet = Keypair.fromSecretKey(bs58.decode(PRIVATE_KEY));
@@ -155,6 +170,7 @@ async function init(): Promise<void> {
   }
   const fetchedSolPrice = await getCurrentSolPrice();
 
+// Comprobamos si se pudo obtener el precio de SOL correctamente
 if (typeof fetchedSolPrice === 'number' && fetchedSolPrice > 0) {
   solPrice = fetchedSolPrice;
   logger.info('SOL price: ' + solPrice);
@@ -318,7 +334,6 @@ export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStat
   }
   
 
-
   if (CHECK_WEB_SOCIALS_DEX) {
     const tokenAddress = poolState.baseMint.toString();
     logger.info(`Check ${tokenAddress}`);
@@ -340,7 +355,7 @@ export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStat
 
 
 
- if (CHECK_LIQUIDITY_AMOUNT) {
+if (CHECK_LIQUIDITY_AMOUNT) {
   let poolInfo = await getMinimalPoolInfo(poolState, RETRY_GET_LIQUIDITY_INFO);
   poolTableInfo.Liquidity = '$' + Math.round(poolInfo.liquidityUSDC).toFixed(2) + ' USD'; 
 
@@ -352,7 +367,6 @@ export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStat
       shouldSkip = true;
   }
 }
-
 
 if (CHECK_MUTABLE) { 
   const isMutable = await isTokenMutable(poolState.baseMint, solanaConnection);
@@ -493,7 +507,10 @@ export async function processOpenBookMarket(updatedAccountInfo: KeyedAccountInfo
   }
 }
 
+
 async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise<void> {
+  logger.info(`Starting the purchase function with Jito enabled: ${USE_JITO}`);
+
   try {
     let tokenAccount = existingTokenAccounts.get(accountData.baseMint.toString());
 
@@ -504,24 +521,23 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
     }
 
     tokenAccount.poolKeys = createPoolKeys(accountId, accountData, tokenAccount.market!);
-   
-    const { innerTransaction } = Liquidity.makeSwapFixedInInstruction(
-      {
-        poolKeys: tokenAccount.poolKeys,
-        userKeys: {
-          tokenAccountIn: quoteTokenAssociatedAddress,
-          tokenAccountOut: tokenAccount.address,
-          owner: wallet.publicKey,
-        },
-        amountIn: quoteAmount.raw,
-        minAmountOut: 0,
+
+    const { innerTransaction } = Liquidity.makeSwapFixedInInstruction({
+      poolKeys: tokenAccount.poolKeys,
+      userKeys: {
+        tokenAccountIn: quoteTokenAssociatedAddress,
+        tokenAccountOut: tokenAccount.address,
+        owner: wallet.publicKey,
       },
-      tokenAccount.poolKeys.version,
-    );
+      amountIn: quoteAmount.raw,
+      minAmountOut: 0,
+    }, tokenAccount.poolKeys.version);
 
     const latestBlockhash = await solanaConnection.getLatestBlockhash({
       commitment: COMMITMENT_LEVEL,
     });
+    
+
     const messageV0 = new TransactionMessage({
       payerKey: wallet.publicKey,
       recentBlockhash: latestBlockhash.blockhash,
@@ -537,72 +553,149 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
         ...innerTransaction.instructions,
       ],
     }).compileToV0Message();
+
     const transaction = new VersionedTransaction(messageV0);
     transaction.sign([wallet, ...innerTransaction.signers]);
-    const signature = await solanaConnection.sendRawTransaction(transaction.serialize(), {
-      preflightCommitment: COMMITMENT_LEVEL,
-    });
-    logger.info({ mint: accountData.baseMint, signature }, 
-      `Executing buy transaction... https://dexscreener.com/solana/${accountData.baseMint}`);
-    const confirmation = await solanaConnection.confirmTransaction(
-      {
+    logger.info("Transaction created and signed.");
+
+    if (USE_JITO) {
+      logger.info(
+        `Executing buy transaction... https://dexscreener.com/solana/${accountData.baseMint}`);
+      const bundle = new Bundle([], Number(process.env.JITO_BUNDLE_TRANSACTION_LIMIT));
+      bundle.addTransactions(transaction);
+      currentOrders++;
+      const tipAccounts = await jitoClient.getTipAccounts();
+      const randomTipAccount = tipAccounts[Math.floor(Math.random() * tipAccounts.length)];
+      bundle.addTipTx(wallet, Number(process.env.JITO_FEE_LAMPORTS), new PublicKey(randomTipAccount), latestBlockhash.blockhash);
+
+      const response = await jitoClient.sendBundle(bundle);
+      logger.info(`Jito bundle sent with response: ${JSON.stringify(response)}`);
+
+      const signature = bs58.encode(transaction.signatures[0]);
+      
+      const confirmation = await solanaConnection.confirmTransaction({
         signature,
         lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
         blockhash: latestBlockhash.blockhash,
-      },
-      COMMITMENT_LEVEL,
-    );
-  
-    if (!confirmation.value.err) {
-      const solUsdPrice: number | undefined = Number(await getCurrentSolPrice());
+      }, COMMITMENT_LEVEL);
 
-      if (tokenAccount && solUsdPrice !== undefined) {
-        const basePromise = solanaConnection.getTokenAccountBalance(accountData.baseVault, COMMITMENT_LEVEL);
-        const quotePromise = solanaConnection.getTokenAccountBalance(accountData.quoteVault, COMMITMENT_LEVEL);
-        await Promise.all([basePromise, quotePromise]);
-  
-        const baseValue = await basePromise;
-        const quoteValue = await quotePromise;
-  
-        if (baseValue?.value?.uiAmount && quoteValue?.value?.uiAmount) {
-          tokenAccount.buyValue = quoteValue?.value?.uiAmount / baseValue?.value?.uiAmount;
-  
-          const precioCompraTokenUSD: number = tokenAccount.buyValue * Number(solUsdPrice);
-          tokenAccount.cambioUsd = precioCompraTokenUSD;
+      if (!confirmation.value.err) {
+        const solUsdPrice = Number(await getCurrentSolPrice());
+      
+        if (tokenAccount && solUsdPrice !== undefined) {
+          const basePromise = solanaConnection.getTokenAccountBalance(accountData.baseVault, COMMITMENT_LEVEL);
+          const quotePromise = solanaConnection.getTokenAccountBalance(accountData.quoteVault, COMMITMENT_LEVEL);
+          await Promise.all([basePromise, quotePromise]);
+      
+          const baseValue = await basePromise;
+          const quoteValue = await quotePromise;
+      
+          if (baseValue?.value?.uiAmount && quoteValue?.value?.uiAmount) {
+            tokenAccount.buyValue = quoteValue.value.uiAmount / baseValue.value.uiAmount;
+            const precioCompraTokenUSD = tokenAccount.buyValue * solUsdPrice;
+            tokenAccount.cambioUsd = precioCompraTokenUSD;
+      
+            existingTokenAccounts.set(accountData.baseMint.toString(), tokenAccount); 
+      
+          } else {
+            logger.warn('Cannot determine buyValue to calculate USD price');
+          }
         } else {
-          logger.warn('Cannot determine buyValue to calculate USD price');
+          logger.warn('Unable to determine token price in USD');
         }
+
+        const buyValueString = typeof tokenAccount.cambioUsd !== 'undefined' ? tokenAccount.cambioUsd.toFixed(11) : '';
+        const quoteAmountString = typeof quoteAmount !== 'undefined' ? quoteAmount.toFixed() : '';
+
+        sendDiscordNotification(
+          DISCORD_WEBHOOK_URL,
+          'Buy',
+          accountData.baseMint.toString(),
+          wallet.publicKey.toString(),
+          quoteAmountString,
+          "N/A",
+          "N/A",
+          "N/A",
+          buyValueString,
+          `https://dexscreener.com/solana/${accountData.baseMint}?maker=${wallet.publicKey}`
+        );
+        logger.info(
+          {
+            mint: accountData.baseMint,
+            signature: signature,
+            url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
+            dex: `https://dexscreener.com/solana/${accountData.baseMint}?maker=${wallet.publicKey}`,
+          },
+          `Confirmed buy tx... Purchase price: ${tokenAccount.cambioUsd?.toFixed(11) ?? "undefined"} USD`,
+        );
       } else {
-        logger.warn('Unable to determine token price in USD');
+        logger.debug(confirmation.value.err);
+        logger.info({ mint: accountData.baseMint, signature: signature.toString() }, `Error confirming buy tx`);
       }
-      const buyValueString = typeof tokenAccount.cambioUsd !== 'undefined' ? tokenAccount.cambioUsd.toFixed(11) : '';
-      const quoteAmountString = typeof quoteAmount !== 'undefined' ? quoteAmount.toFixed() : '';
-      sendDiscordNotification(
-        DISCORD_WEBHOOK_URL,
-        'Buy',
-        accountData.baseMint.toString(),
-        wallet.publicKey.toString(),
-        quoteAmountString,
-        "N/A",
-        "N/A",
-        "N/A",
-        buyValueString,
-        `https://dexscreener.com/solana/${accountData.baseMint}?maker=${wallet.publicKey}`
-      );
-        
-  
-      currentOrders++;
-      logger.info(
-        {
-          signature,
-          url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
-          dex: `https://dexscreener.com/solana/${accountData.baseMint}?maker=${wallet.publicKey}`,
-        },
-        `Confirmed buy tx... Purchase price: ${tokenAccount.cambioUsd?.toFixed(11) ?? "undefined"} USD`,
-      );
     } else {
-      logger.debug(confirmation.value.err);
-      logger.info({ mint: accountData.baseMint, signature }, `Error confirming buy tx`);
+      const signature = await solanaConnection.sendRawTransaction(transaction.serialize(), {
+        preflightCommitment: COMMITMENT_LEVEL,
+      });
+      logger.info({ mint: accountData.baseMint, signature }, 
+        `Executing buy transaction... https://dexscreener.com/solana/${accountData.baseMint}`);
+      currentOrders++;
+      const confirmation = await solanaConnection.confirmTransaction({
+        signature: signature.toString(),
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        blockhash: latestBlockhash.blockhash,
+      }, COMMITMENT_LEVEL);
+
+      if (!confirmation.value.err) {
+        const solUsdPrice = Number(await getCurrentSolPrice());
+
+        if (tokenAccount && solUsdPrice !== undefined) {
+          const basePromise = solanaConnection.getTokenAccountBalance(accountData.baseVault, COMMITMENT_LEVEL);
+          const quotePromise = solanaConnection.getTokenAccountBalance(accountData.quoteVault, COMMITMENT_LEVEL);
+          await Promise.all([basePromise, quotePromise]);
+
+          const baseValue = await basePromise;
+          const quoteValue = await quotePromise;
+
+          if (baseValue?.value?.uiAmount && quoteValue?.value?.uiAmount) {
+            tokenAccount.buyValue = quoteValue.value.uiAmount / baseValue.value.uiAmount;
+            const precioCompraTokenUSD = tokenAccount.buyValue * solUsdPrice;
+            tokenAccount.cambioUsd = precioCompraTokenUSD;
+          } else {
+            logger.warn('Cannot determine buyValue to calculate USD price');
+          }
+        } else {
+          logger.warn('Unable to determine token price in USD');
+        }
+
+        const buyValueString = typeof tokenAccount.cambioUsd !== 'undefined' ? tokenAccount.cambioUsd.toFixed(11) : '';
+        const quoteAmountString = typeof quoteAmount !== 'undefined' ? quoteAmount.toFixed() : '';
+
+        sendDiscordNotification(
+          DISCORD_WEBHOOK_URL,
+          'Buy',
+          accountData.baseMint.toString(),
+          wallet.publicKey.toString(),
+          quoteAmountString,
+          "N/A",
+          "N/A",
+          "N/A",
+          buyValueString,
+          `https://dexscreener.com/solana/${accountData.baseMint}?maker=${wallet.publicKey}`
+        );
+
+        logger.info(
+          {
+            mint: accountData.baseMint,
+            signature: signature,
+            url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
+            dex: `https://dexscreener.com/solana/${accountData.baseMint}?maker=${wallet.publicKey}`,
+          },
+          `Confirmed buy tx... Purchase price: ${tokenAccount.cambioUsd?.toFixed(11) ?? "undefined"} USD`,
+        );
+      } else {
+        logger.debug(confirmation.value.err);
+        logger.info({ mint: accountData.baseMint, signature: signature.toString() }, `Error confirming buy tx`);
+      }
     }
   } catch (e) {
     logger.debug(e);
@@ -612,12 +705,13 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
 
 
 
-
 async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish, value: number, absoluteMaxReachedValue: number): Promise<boolean> {
   let retries = 0;
   let initialized = false;
   let currentTakeProfit = 0;
   let currentStopLoss = 0;
+
+
    
   do {
     try {
@@ -727,62 +821,107 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
       }).compileToV0Message();
       const transaction = new VersionedTransaction(messageV0);
       transaction.sign([wallet, ...innerTransaction.signers]);
-      const signature = await solanaConnection.sendRawTransaction(transaction.serialize(), {
-        preflightCommitment: COMMITMENT_LEVEL,
-      });
-      currentOrders--;
-      logger.info({ mint, signature }, `Executing sell transaction... https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`);
-      const confirmation = await solanaConnection.confirmTransaction(
-        {
+      if (USE_JITO) {
+        logger.info({ mint }, `Executing sell transaction... https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`);
+        const bundle = new Bundle([], Number(process.env.JITO_BUNDLE_TRANSACTION_LIMIT));
+        bundle.addTransactions(transaction);
+        currentOrders++;
+        const tipAccounts = await jitoClient.getTipAccounts();
+        const randomTipAccount = tipAccounts[Math.floor(Math.random() * tipAccounts.length)];
+        bundle.addTipTx(wallet, Number(process.env.JITO_FEE_LAMPORTS), new PublicKey(randomTipAccount), latestBlockhash.blockhash);
+
+        const response = await jitoClient.sendBundle(bundle);
+        logger.info(`Bundle de Jito enviado con respuesta: ${JSON.stringify(response)}`);
+
+        const signature = bs58.encode(transaction.signatures[0]);
+        const confirmation = await solanaConnection.confirmTransaction({
           signature,
           lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
           blockhash: latestBlockhash.blockhash,
-        },
-        COMMITMENT_LEVEL,
-      );
-      if (confirmation.value.err) {
-        logger.debug(confirmation.value.err);
-        logger.info({ mint, signature }, `Error confirming sell tx`);
-        
-      
-        continue;
+        }, COMMITMENT_LEVEL);
+
+        if (!confirmation.value.err) {
+          const buyValueString = typeof tokenAccount.cambioUsd !== 'undefined' ? tokenAccount.cambioUsd.toFixed(11) : '';
+          const quoteAmountString = typeof quoteAmount !== 'undefined' ? quoteAmount.toFixed() : '';
+
+          sendDiscordNotification(
+            DISCORD_WEBHOOK_URL, 
+            'Sell',               
+            tokenAccount.address.toString(),            
+            wallet.publicKey.toString(),       
+            quoteAmountString,     
+            value.toFixed(11), 
+            '100%',                            
+            profitLoss.toFixed(6),           
+            buyValueString, 
+            `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}` 
+          );
+          logger.info(
+            {
+              mint,
+              signature,
+              url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
+              dex: `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`,
+            },
+            `Confirmed sell tx... Sold at: ${value.toFixed(11)} USD`,
+          );
+          return true;
+        } else {
+          logger.debug(confirmation.value.err);
+          logger.info({ mint, signature: signature.toString() }, `Error confirming sell tx`);
+        }
+      } else {
+        const signature = await solanaConnection.sendRawTransaction(transaction.serialize(), {
+          preflightCommitment: COMMITMENT_LEVEL,
+        });
+        currentOrders--;
+        logger.info({ mint, signature }, `Executing sell transaction... https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`);
+        const confirmation = await solanaConnection.confirmTransaction({
+          signature: signature.toString(),
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+          blockhash: latestBlockhash.blockhash,
+        }, COMMITMENT_LEVEL);
+
+        if (!confirmation.value.err) {
+          const buyValueString = typeof tokenAccount.cambioUsd !== 'undefined' ? tokenAccount.cambioUsd.toFixed(11) : '';
+          const quoteAmountString = typeof quoteAmount !== 'undefined' ? quoteAmount.toFixed() : '';
+          sendDiscordNotification(
+            DISCORD_WEBHOOK_URL, 
+            'Sell',               
+            tokenAccount.address.toString(),            
+            wallet.publicKey.toString(),       
+            quoteAmountString,     
+            value.toFixed(11), 
+            '100%',                            
+            profitLoss.toFixed(6),           
+            buyValueString, 
+            `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}` 
+          );
+          logger.info(
+            {
+              mint,
+              signature,
+              url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
+              dex: `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`,
+            },
+            `Confirmed sell tx... Sold at: ${value.toFixed(11)} USD`,
+          );
+          return true;
+        } else {
+          logger.debug(confirmation.value.err);
+          logger.info({ mint, signature: signature.toString() }, `Error confirming sell tx`);
+        }
       }
-      const buyValueString = typeof tokenAccount.cambioUsd !== 'undefined' ? tokenAccount.cambioUsd.toFixed(11) : '';
-      const quoteAmountString = typeof quoteAmount !== 'undefined' ? quoteAmount.toFixed() : '';
-      sendDiscordNotification(
-        DISCORD_WEBHOOK_URL, 
-        'Sell',               
-        tokenAccount.address.toString(),            
-        wallet.publicKey.toString(),       
-        quoteAmountString,     
-        value.toFixed(11), 
-        '100%',                            
-        profitLoss.toFixed(6),           
-        buyValueString, 
-        `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}` 
-      );
-      logger.info(
-        {
-          mint,
-          signature,
-          url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
-          dex: `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`,
-        },
-        `Confirmed sell tx... Sold at: ${value.toFixed(11)} USD`,
-      );
-      return true;
-      
     } else {
-     
       return false;
     }
-    } catch (e: any) {
-      retries++;
-      logger.debug(e);
-      logger.error({ mint }, `Failed to sell token, retry: ${retries}/${MAX_SELL_RETRIES}`);
-    }
-  } while (retries < MAX_SELL_RETRIES);
-  return true;
+  } catch (e: any) {
+    retries++;
+    logger.debug(e);
+    logger.error({ mint }, `Failed to sell token, retry: ${retries}/${MAX_SELL_RETRIES}`);
+  }
+} while (retries < MAX_SELL_RETRIES);
+return true;
 }
 
 function loadSnipeList() {
@@ -805,7 +944,6 @@ function loadSnipeList() {
 function shouldBuy(key: string): boolean {
   return USE_SNIPE_LIST ? snipeList.includes(key) : true;
 }
-
 
 async function getVaultBalance(vaultPublicKey: PublicKey): Promise<number> {
   try {
@@ -846,7 +984,7 @@ const runListener = async () => {
 
         vaultAddresses[poolState.baseMint.toString()] = poolState.quoteVault.toBase58();
 
-       const quoteVaultAddress = new PublicKey(vaultAddresses[poolState.baseMint.toString()]);
+  const quoteVaultAddress = new PublicKey(vaultAddresses[poolState.baseMint.toString()]);
 
   
         
