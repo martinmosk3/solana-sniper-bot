@@ -465,25 +465,24 @@ if (CHECK_SOCIALS_METAPLEX) {
 
 
 console.table([poolTableInfo]); 
-if (!shouldSkip && currentOrders < MAX_BUY) {
+if (!shouldSkip && (MAX_BUY === 0 || currentOrders < MAX_BUY)) {
   logger.info(`Current Orders: ${currentOrders}, Max Buy: ${MAX_BUY}`);
 
   try {
-    await buy(id, poolState); 
-    currentOrders++;  
-    logger.info('Attempt to purchase was made.');
+      await buy(id, poolState);
+      currentOrders++;  
+      logger.info('Attempt to purchase was made.');
   } catch (error) {
-    logger.error(`Failed to buy token mint: "${id}"`, error);
+      logger.error(`Failed to buy token mint: "${id}"`, error);
   }
 } else {
   if (shouldSkip) {
-    logger.info("Purchase skipped due to pre-check conditions.");
+      logger.info("Purchase skipped due to pre-check conditions.");
   }
-  if (currentOrders >= MAX_BUY) {
-    logger.error('SKIPPING: You reached your max buy orders');
+  if (MAX_BUY !== 0 && currentOrders >= MAX_BUY) {
+      logger.error('SKIPPING: You reached your max buy orders');
   }
 }
-
 }
 
 
