@@ -5,8 +5,8 @@ export const NETWORK = 'mainnet-beta';
 export const COMMITMENT_LEVEL: Commitment = retrieveEnvVariable('COMMITMENT_LEVEL', logger) as Commitment;
 export const RPC_ENDPOINT = retrieveEnvVariable('RPC_ENDPOINT', logger);
 export const RPC_WEBSOCKET_ENDPOINT = retrieveEnvVariable('RPC_WEBSOCKET_ENDPOINT', logger);
-export const RPC_ENDPOINT_ALT = retrieveEnvVariable('RPC_ENDPOINT_ALT', logger);
-export const RPC_WEBSOCKET_ENDPOINT_ALT = retrieveEnvVariable('RPC_WEBSOCKET_ENDPOINT_ALT', logger);
+export const RPC_TRACK_PRICE = retrieveEnvVariable('RPC_TRACK_PRICE', logger);
+export const RPC_TRACK_PRICE_ALT = retrieveEnvVariable('RPC_TRACK_PRICE', logger);
 export const LOG_LEVEL = retrieveEnvVariable('LOG_LEVEL', logger);
 export const CHECK_IF_MINT_IS_RENOUNCED = retrieveEnvVariable('CHECK_IF_MINT_IS_RENOUNCED', logger) === 'true';
 export const USE_SNIPE_LIST = retrieveEnvVariable('USE_SNIPE_LIST', logger) === 'true';
@@ -48,6 +48,9 @@ export const JITO_API_PRIVATE_KEY = retrieveEnvVariable('JITO_API_PRIVATE_KEY', 
 export const JITO_BUNDLE_TRANSACTION_LIMIT = Number(retrieveEnvVariable('JITO_BUNDLE_TRANSACTION_LIMIT', logger));
 export const JITO_FEE_LAMPORTS = Number(retrieveEnvVariable('JITO_FEE_LAMPORTS', logger));
 export const USE_JITO = retrieveEnvVariable('USE_JITO', logger) === 'true';
+export const USE_JITO_SELL = retrieveEnvVariable('USE_JITO_SELL', logger) === 'true';
+export const ONE_TOKEN_A_TIME = retrieveEnvVariable('ONE_TOKEN_A_TIME', logger) === 'true';
+export const TRACKING_PRICE_BIRDEYE = retrieveEnvVariable('TRACKING_PRICE_BIRDEYE', logger) === 'true';
 
 
 
