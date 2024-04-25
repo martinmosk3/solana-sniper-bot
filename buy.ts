@@ -60,8 +60,6 @@ import {
   QUOTE_MINT,
   RPC_ENDPOINT,
   RPC_WEBSOCKET_ENDPOINT,
-  RPC_ENDPOINT_ALT,
-  RPC_WEBSOCKET_ENDPOINT_ALT,
   SNIPE_LIST_REFRESH_INTERVAL,
   USE_SNIPE_LIST,
   MAX_BUY,
@@ -92,7 +90,10 @@ import {
   LIQUIDITY_SUPPLY_PERCENTAGE,
   JITO_API_PRIVATE_KEY,
   JITO_BLOCK_ENGINE_URL,
-  USE_JITO
+  USE_JITO,
+  USE_JITO_SELL,
+  ONE_TOKEN_A_TIME,
+  TRACKING_PRICE_BIRDEYE
   } from './constants';
   import { Bundle } from 'jito-ts/dist/sdk/block-engine/types';
   import { searcherClient } from 'jito-ts/dist/sdk/block-engine/searcher';
@@ -126,10 +127,12 @@ let quoteTokenAssociatedAddress: PublicKey;
 let quoteAmount: TokenAmount;
 let currentOrders = 0;
 let solPrice: number = 0;
+let isTransactionActive = false;
 
 
 const jitoApiKeyPriv = Keypair.fromSecretKey(bs58.decode(JITO_API_PRIVATE_KEY))
 const jitoClient = searcherClient(JITO_BLOCK_ENGINE_URL, jitoApiKeyPriv);
+
 
 
 let snipeList: string[] = [];
@@ -168,7 +171,6 @@ async function init(): Promise<void> {
   }
   const fetchedSolPrice = await getCurrentSolPrice();
 
-// Comprobamos si se pudo obtener el precio de SOL correctamente
 if (typeof fetchedSolPrice === 'number' && fetchedSolPrice > 0) {
   solPrice = fetchedSolPrice;
   logger.info('SOL price: ' + solPrice);
@@ -337,20 +339,13 @@ export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStat
     logger.info(`Check ${tokenAddress}`);
     const tokenDetails: TokenDetails = await checkTokenDetails(tokenAddress);
 
-    const countSocials = [
-        tokenDetails.websites,
-        tokenDetails.telegram,
-        tokenDetails.twitter
-    ].filter(Boolean).length; 
-
-    if (countSocials < 2) {
+    if (tokenDetails.websites && tokenDetails.telegram && tokenDetails.twitter) {
+        poolTableInfo["Socials?"] = "Yes";
+    } else {
         poolTableInfo["Socials?"] = "No";
         shouldSkip = true;
-    } else {
-        poolTableInfo["Socials?"] = "Yes";
     }
 }
-
 
 
 if (CHECK_LIQUIDITY_AMOUNT) {
@@ -470,8 +465,6 @@ if (!shouldSkip && (MAX_BUY === 0 || currentOrders < MAX_BUY)) {
 
   try {
       await buy(id, poolState);
-      currentOrders++;  
-      logger.info('Attempt to purchase was made.');
   } catch (error) {
       logger.error(`Failed to buy token mint: "${id}"`, error);
   }
@@ -484,8 +477,6 @@ if (!shouldSkip && (MAX_BUY === 0 || currentOrders < MAX_BUY)) {
   }
 }
 }
-
-
 
 export async function processOpenBookMarket(updatedAccountInfo: KeyedAccountInfo) {
   let accountData: MarketStateV3 | undefined;
@@ -506,7 +497,18 @@ export async function processOpenBookMarket(updatedAccountInfo: KeyedAccountInfo
 
 
 async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise<void> {
+
   logger.info(`Starting the purchase function with Jito enabled: ${USE_JITO}`);
+
+  if (ONE_TOKEN_A_TIME && isTransactionActive) {
+    logger.info("Active transaction, rejected purchase.");
+    return;
+  }
+
+  isTransactionActive = true;
+    logger.info("Starting purchase...");
+
+  
 
   try {
     let tokenAccount = existingTokenAccounts.get(accountData.baseMint.toString());
@@ -556,11 +558,11 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
     logger.info("Transaction created and signed.");
 
     if (USE_JITO) {
-      logger.info(
+      logger.info({ mint: accountData.baseMint }, 
         `Executing buy transaction... https://dexscreener.com/solana/${accountData.baseMint}`);
       const bundle = new Bundle([], Number(process.env.JITO_BUNDLE_TRANSACTION_LIMIT));
       bundle.addTransactions(transaction);
-      currentOrders++;
+      
       const tipAccounts = await jitoClient.getTipAccounts();
       const randomTipAccount = tipAccounts[Math.floor(Math.random() * tipAccounts.length)];
       bundle.addTipTx(wallet, Number(process.env.JITO_FEE_LAMPORTS), new PublicKey(randomTipAccount), latestBlockhash.blockhash);
@@ -577,6 +579,7 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
       }, COMMITMENT_LEVEL);
 
       if (!confirmation.value.err) {
+        currentOrders++;
         const solUsdPrice = Number(await getCurrentSolPrice());
       
         if (tokenAccount && solUsdPrice !== undefined) {
@@ -635,7 +638,7 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
       });
       logger.info({ mint: accountData.baseMint, signature }, 
         `Executing buy transaction... https://dexscreener.com/solana/${accountData.baseMint}`);
-      currentOrders++;
+    
       const confirmation = await solanaConnection.confirmTransaction({
         signature: signature.toString(),
         lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
@@ -643,6 +646,7 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
       }, COMMITMENT_LEVEL);
 
       if (!confirmation.value.err) {
+        currentOrders++;
         const solUsdPrice = Number(await getCurrentSolPrice());
 
         if (tokenAccount && solUsdPrice !== undefined) {
@@ -687,17 +691,25 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
             url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
             dex: `https://dexscreener.com/solana/${accountData.baseMint}?maker=${wallet.publicKey}`,
           },
-          `Confirmed buy tx... Purchase price: ${tokenAccount.cambioUsd?.toFixed(11) ?? "undefined"} USD`,
+          `Confirmed buy tx... Purchase price: ${tokenAccount.cambioUsd?.toFixed(11) ?? "undefined"}`,
         );
+        setTimeout(() => {
+          isTransactionActive = false;
+          logger.info("10 minutes passed without buy, ready for new transactions.");
+        }, 600000);
       } else {
         logger.debug(confirmation.value.err);
         logger.info({ mint: accountData.baseMint, signature: signature.toString() }, `Error confirming buy tx`);
+        isTransactionActive = false;
       }
     }
   } catch (e) {
     logger.debug(e);
     logger.error({ mint: accountData.baseMint }, `Failed to buy token`);
-  }
+    isTransactionActive = false;
+
+  } 
+
 }
 
 
@@ -709,7 +721,6 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
   let currentStopLoss = 0;
 
 
-   
   do {
     try {
      
@@ -734,7 +745,8 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
       }
 
       
-      const purchasePrice = tokenAccount.cambioUsd;
+      const purchasePrice = TRACKING_PRICE_BIRDEYE ? tokenAccount.cambioUsd : tokenAccount.buyValue;
+
       
       
 
@@ -818,11 +830,10 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
       }).compileToV0Message();
       const transaction = new VersionedTransaction(messageV0);
       transaction.sign([wallet, ...innerTransaction.signers]);
-      if (USE_JITO) {
+      if (USE_JITO_SELL) {
         logger.info({ mint }, `Executing sell transaction... https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`);
         const bundle = new Bundle([], Number(process.env.JITO_BUNDLE_TRANSACTION_LIMIT));
         bundle.addTransactions(transaction);
-        currentOrders++;
         const tipAccounts = await jitoClient.getTipAccounts();
         const randomTipAccount = tipAccounts[Math.floor(Math.random() * tipAccounts.length)];
         bundle.addTipTx(wallet, Number(process.env.JITO_FEE_LAMPORTS), new PublicKey(randomTipAccount), latestBlockhash.blockhash);
@@ -860,7 +871,7 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
               url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
               dex: `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`,
             },
-            `Confirmed sell tx... Sold at: ${value.toFixed(11)} USD`,
+            `Confirmed sell tx... Sold at: ${value.toFixed(11)} `,
           );
           return true;
         } else {
@@ -871,7 +882,6 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
         const signature = await solanaConnection.sendRawTransaction(transaction.serialize(), {
           preflightCommitment: COMMITMENT_LEVEL,
         });
-        currentOrders--;
         logger.info({ mint, signature }, `Executing sell transaction... https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`);
         const confirmation = await solanaConnection.confirmTransaction({
           signature: signature.toString(),
@@ -901,12 +911,14 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
               url: `https://solscan.io/tx/${signature}?cluster=${NETWORK}`,
               dex: `https://dexscreener.com/solana/${mint}?maker=${wallet.publicKey}`,
             },
-            `Confirmed sell tx... Sold at: ${value.toFixed(11)} USD`,
+            `Confirmed sell tx... Sold at: ${value.toFixed(11)}`,
           );
+          isTransactionActive = false;
           return true;
         } else {
           logger.debug(confirmation.value.err);
           logger.info({ mint, signature: signature.toString() }, `Error confirming sell tx`);
+          isTransactionActive = false;
         }
       }
     } else {
@@ -916,7 +928,8 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
     retries++;
     logger.debug(e);
     logger.error({ mint }, `Failed to sell token, retry: ${retries}/${MAX_SELL_RETRIES}`);
-  }
+  } 
+
 } while (retries < MAX_SELL_RETRIES);
 return true;
 }
@@ -981,7 +994,7 @@ const runListener = async () => {
 
         vaultAddresses[poolState.baseMint.toString()] = poolState.quoteVault.toBase58();
 
-  const quoteVaultAddress = new PublicKey(vaultAddresses[poolState.baseMint.toString()]);
+        const quoteVaultAddress = new PublicKey(vaultAddresses[poolState.baseMint.toString()]);
 
   
         
@@ -1033,7 +1046,7 @@ const runListener = async () => {
     ],
   );
 
- if (AUTO_SELL) {
+  if (AUTO_SELL) {
     const walletSubscriptionId = solanaConnection.onProgramAccountChange(
       TOKEN_PROGRAM_ID,
       async (updatedAccountInfo) => {
@@ -1046,9 +1059,14 @@ const runListener = async () => {
         const MIN_VAULT_BALANCE_TO_ACT = 1;
         let initialChecksDone = false;  
         let initialChecksPassed = 0;
+        let priceInSol: number | undefined;
 
         while (!completed) {
           await new Promise(resolve => setTimeout(resolve, 3000));
+
+          let poolId = null;
+          let attempts = 0;
+          const maxAttempts = 20; 
 
           const mintKey = accountData.mint.toBase58();
           const vaultAddressKey = vaultAddresses[mintKey];
@@ -1078,18 +1096,54 @@ const runListener = async () => {
               logger.error(`ALERT: Vault balance for mint ${mintKey} is critically low at ${vaultBalance} SOL. Starting immediate sale.`);
               const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, 0, -Infinity);
               completed = saleResult;
+              if (completed) {
+                absoluteMaxReachedValue = -Infinity; 
+              }
               continue;
+              
             }
           }
 
-          const currValue = await retrieveTokenValue(mintKey);
-          logger.info(`Max Price: ${absoluteMaxReachedValue} Current value: ${currValue}`);
-
-          if (currValue && vaultBalance > 0) {
-            absoluteMaxReachedValue = Math.max(absoluteMaxReachedValue, currValue);
-            const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, currValue, absoluteMaxReachedValue);
-            completed = saleResult;
+          while (attempts < maxAttempts && poolId === null) {
+            poolId = await getPoolID(mintKey);
+            if (poolId === null) {
+              console.log("No Pool ID Found, retrying...");
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              attempts++;
+            }
           }
+
+          if (poolId === null) {
+            console.error("Failed to find Pool ID after several attempts.");
+            continue; 
+          }
+          if (TRACKING_PRICE_BIRDEYE) {
+            priceInSol = await retrieveTokenValue(mintKey);
+            if (priceInSol !== undefined) {
+
+            } else {
+                logger.error("Failed to retrieve price from BirdEye");
+            }
+        } else {
+            priceInSol = await getTokenPrice(poolId);
+            if (priceInSol !== undefined) {
+
+            } else {
+                logger.error("Failed to retrieve price from the alternative method");
+            }
+        }
+        
+        logger.info(`Max Price: ${absoluteMaxReachedValue.toFixed(11)} Current value: ${priceInSol ? priceInSol.toFixed(11) : "undefined"}`);
+        
+        if (priceInSol !== undefined && vaultBalance > 0) {
+            absoluteMaxReachedValue = Math.max(absoluteMaxReachedValue, priceInSol);
+            const saleResult = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, priceInSol, absoluteMaxReachedValue);
+            completed = saleResult;
+
+            if (completed) {
+              absoluteMaxReachedValue = -Infinity; 
+            }
+        }
         }
       },
       COMMITMENT_LEVEL,
@@ -1110,6 +1164,7 @@ const runListener = async () => {
 }
 
 
+
   logger.info(`Listening for raydium changes: ${raydiumSubscriptionId}`);
   logger.info(`Listening for open book changes: ${openBookSubscriptionId}`);
 
@@ -1123,3 +1178,4 @@ const runListener = async () => {
 };
 
 runListener();
+
